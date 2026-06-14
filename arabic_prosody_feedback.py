@@ -16,7 +16,7 @@ pinpoints the exact divergence, and a numbered prescription tells the model
 precisely what to add, remove, or reweight.
 
 This module is **fully standalone**: it embeds the subset of
-``arabic_prosody_helpers`` (data model, lookup tables, and analysis helpers)
+`arabic_prosody_helpers` (data model, lookup tables, and analysis helpers)
 that it depends on, so it can run without that file being present.  It still
 requires **pyarud** (``pip install pyarud``) for the actual prosodic analysis.
 """
@@ -511,10 +511,16 @@ def _enrich_foot(raw: dict, position_label: str, num_feet: int) -> FootResult:
     if status == "ok":
         if expected in canonical_values and expected == actual:
             zihaf_name = "Salim"
+        elif (expected, actual) in _ZIHAF_MAP:
+            canonical = expected
+            zihaf_name = _ZIHAF_MAP[(expected, actual)]
         else:
             found_canon: str | None = None
             for key in _ZIHAF_MAP:
                 if key[1] == actual and key[0] in canonical_values:
+                    # If expected pattern itself is canonical, do not map to a different canonical's zihāf
+                    if expected in canonical_values and key[0] != expected:
+                        continue
                     found_canon = key[0]
                     break
             if found_canon:
@@ -996,15 +1002,6 @@ def generate_verse_correction(
     str
         Multi-line feedback string.  Prepend directly to an LLM re-generation
         request.
-
-    Examples
-    --------
-    >>> vr = analyze_verse(
-    ...     "يَخْضَعُ الجَهْرُ لِلْعُلَا فَيَنِي",
-    ...     "كَمَا يَحْنُو الحَبِيبُ لِلطِّيبَا",
-    ...     meter_name="khafeef",
-    ... )
-    >>> print(generate_verse_correction(vr))
     """
     out: list[str] = []
     BAR = "═" * 66
@@ -1210,12 +1207,6 @@ def generate_poem_correction_report(
     -------
     str
         Full multi-line report.
-
-    Examples
-    --------
-    >>> poem_result = analyze_poem(lyrics, meter_name='khafeef')
-    >>> report = generate_poem_correction_report(poem_result)
-    >>> print(report)
     """
     out: list[str] = []
     W = "═" * 66
@@ -1336,13 +1327,6 @@ def analyze_and_report(
         ``(result_dict, correction_report)``
         - ``result_dict`` mirrors the output of ``analyze_poem_to_dict``.
         - ``correction_report`` is the full LLM-ready feedback string.
-
-    Examples
-    --------
-    >>> result, report = analyze_and_report(lyrics, meter_name='khafif')
-    >>> print(report)          # detailed correction output
-    >>> # Or to get just the broken verses:
-    >>> result, report = analyze_and_report(lyrics, 'khafif', only_broken=True)
     """
     pyarud_key = to_pyarud_meter_key(meter_name)
     poem = analyze_poem(verses, meter_name=pyarud_key)
