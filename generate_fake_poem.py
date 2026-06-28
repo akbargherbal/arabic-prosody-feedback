@@ -128,13 +128,89 @@ for _fc_b, _pat_b in CANONICAL_PATTERNS.items():
     if _pat_b not in _BINARY_TO_FOOT_CLASS:      # first occurrence wins
         _BINARY_TO_FOOT_CLASS[_pat_b] = _fc_b
 
+#: (foot_class, zihaf_name) pairs that are classically *terminal-only*
+#: modifications (ʿilal), never valid on a non-terminal (Hashw) foot.
+#:
+#: _ZIHAF_MAP is keyed purely by binary-pattern deltas because that table's
+#: real job is identifying *which* modification produced a given pattern
+#: (used by analyze_poem/identify_zihaf) — it intentionally contains every
+#: transformation pyarud's zihaf.py knows how to perform on a foot, terminal
+#: or not. The naive builder below used to treat "appears in _ZIHAF_MAP" as
+#: "therefore valid in Hashw", which is wrong: pyarud's own Tafeela classes
+#: (pyarud/tafeela.py, `allowed_zehafs`) only license a subset of these per
+#: class for non-terminal use; the rest are only reachable via a meter's
+#: `arod_dharbs_map` (i.e. ʿArūḍ/Ḍarb-only ʿilal). Applying one of these to
+#: a Hashw foot silently truncates it, which then shifts the scan offset of
+#: every later foot in the hemistich and cascades into spurious failures
+#: there too.
+#:
+#: This list was verified against pyarud 0.1.10's `Tafeela.allowed_zehafs`
+#: for every foot class used by the 9 generatively-supported meters (plus
+#: Mafoolato, used by Saree/Munsareh/Muqtadheb, for completeness):
+#:   Fawlon      : {Qabadh, Thalm, Tharm}        → Hadhf, Batr are ʿilal
+#:   Faelaton    : {Khaban, Kaff, Shakal}        → Hadhf, Waqf are ʿilal
+#:   Mafaeelon   : {Qabadh, Kaff}                → Hadhf is an ʿilla;
+#:                                                  "Shakl_alt" isn't a
+#:                                                  recognised Mafaeelon
+#:                                                  zihaf at all
+#:   Mustafelon  : {Khaban, Tay, Khabal}         → Kasf is an ʿilla here
+#:                                                  (it IS valid Hashw for
+#:                                                  Mafoolato, hence this is
+#:                                                  scoped per *class*, not
+#:                                                  a flat zihaf-name ban)
+#:   Mafaelaton  : {Asab, Akal, Nakas}           → Qatf is an ʿilla
+_HASHW_INVALID_PAIRS: frozenset[tuple[str, str]] = frozenset({
+    ("Fawlon", "Hadhf"),
+    ("Fawlon", "Batr"),
+    ("Faelaton", "Hadhf"),
+    ("Faelaton", "Waqf"),
+    ("Mafaeelon", "Hadhf"),
+    ("Mafaeelon", "Shakl_alt"),
+    ("Mustafelon", "Kasf"),
+    ("Mafaelaton", "Qatf"),
+})
+
+#: Meter-specific Hashw exceptions layered *on top of* the generic,
+#: foot-class-based `_VALID_HASHW_ZIHAFS` table below.
+#:
+#: A handful of zihāfāt are legitimate Hashw modifications for a foot class
+#: in most meters but are classically excluded for that class in one
+#: specific meter — pyarud encodes this directly via each Bahr subclass's
+#: `disallowed_zehafs_for_hashw`. Khafeef is the one case among our 9
+#: supported meters where this matters:
+#:
+#:   Khafeef = Faelaton, Mustafe_lon, Faelaton(terminal)
+#:
+#:   - Foot 0 (Faelaton): Kaff/Shakal are ordinary Faelaton Hashw zihāfāt
+#:     elsewhere (e.g. Ramal) but pyarud's Khafeef class explicitly forbids
+#:     them in Hashw (`disallowed_zehafs_for_hashw = {0: ([Kaff, Shakal], ...)}`).
+#:   - Foot 1: Khafeef's middle foot is actually "Mustafe_lon", a distinct
+#:     pyarud Tafeela class that merely *shares* Mustafelon's Salim binary
+#:     pattern (1010110). Mustafe_lon's real allowed zihafs are {Khaban,
+#:     Kaff, Tay, Shakal} — notably NOT Khabal, unlike genuine Mustafelon
+#:     (used in Rajaz/Baseet/Saree). Since this module's binary→foot-class
+#:     lookup collapses both classes into "Mustafelon" (see comment above),
+#:     Khabal must be vetoed here specifically for Khafeef's foot 1.
+#:
+#: Keyed by meter_key → {non-terminal foot index → zihafs to additionally
+#: forbid at that exact position}.
+_METER_HASHW_OVERRIDES: dict[str, dict[int, frozenset[str]]] = {
+    "khafeef": {
+        0: frozenset({"Kaff", "Shakal"}),
+        1: frozenset({"Khabal"}),
+    },
+}
+
 #: Maps foot_class → set of zihaf names applicable to that foot class.
-#: Derived directly from _ZIHAF_MAP keys — only classical, validated modifications.
+#: Derived from _ZIHAF_MAP keys, excluding terminal-only ʿilal — see
+#: _HASHW_INVALID_PAIRS above. (Meter-specific exceptions on top of this
+#: are handled separately via _METER_HASHW_OVERRIDES, since the same foot
+#: class can be Hashw-valid for a zihaf in one meter and not another.)
 _VALID_HASHW_ZIHAFS: dict[str, set[str]] = {}
 
 for (_can_bin, _mod_bin), _zn in _ZIHAF_MAP.items():
     _fc = _BINARY_TO_FOOT_CLASS.get(_can_bin)
-    if _fc:
+    if _fc and (_fc, _zn) not in _HASHW_INVALID_PAIRS:
         _VALID_HASHW_ZIHAFS.setdefault(_fc, set()).add(_zn)
 
 
@@ -161,7 +237,12 @@ def _valid_hashw_zihafs(foot_class: str) -> set[str]:
 # ---------------------------------------------------------------------------
 
 
-def _try_apply_zihaf(word: str, zihaf: str) -> str:
+def _try_apply_zihaf(
+    word: str,
+    zihaf: str,
+    *,
+    extra_invalid: Optional[frozenset[str]] = None,
+) -> str:
     """
     Apply a zihāf modification to an Arabic mnemonic foot name.
 
@@ -171,7 +252,8 @@ def _try_apply_zihaf(word: str, zihaf: str) -> str:
     2. Return ``word`` unmodified if the foot class has no known Salim form
        (treats the word as a terminal/compound that cannot be modified).
     3. Return ``word`` unmodified if ``zihaf`` is not listed in
-       ``_VALID_HASHW_ZIHAFS[foot_class]`` (rejects invalid modifications).
+       ``_VALID_HASHW_ZIHAFS[foot_class]``, or is vetoed by ``extra_invalid``
+       (rejects invalid modifications — see ``extra_invalid`` below).
     4. Re-resolve from the Salim root via ``(foot_class, zihaf)`` — this
        prevents double-application when ``word`` is already a modified form.
     5. Return the mnemonic for ``(foot_class, zihaf)``.
@@ -182,6 +264,13 @@ def _try_apply_zihaf(word: str, zihaf: str) -> str:
         Diacritised Arabic mnemonic, e.g. ``"فَعُولُنْ"``.
     zihaf:
         Target modification name, e.g. ``"Qabadh"`` or ``"Salim"``.
+    extra_invalid:
+        Optional set of zihaf names to reject *in addition to* whatever
+        ``_VALID_HASHW_ZIHAFS[foot_class]`` already excludes. Used by
+        :func:`_build_hemistich` to layer a meter-specific Hashw exception
+        (``_METER_HASHW_OVERRIDES``) on top of the generic, foot-class-level
+        validity table — the same foot class can be Hashw-valid for a given
+        zihaf in one meter and not another (e.g. Khafeef vs. Ramal/Rajaz).
 
     Returns
     -------
@@ -212,10 +301,11 @@ def _try_apply_zihaf(word: str, zihaf: str) -> str:
     if zihaf == "Salim":
         return salim_mnemonic
 
-    # Reject modifications not defined for this foot class
+    # Reject modifications not defined for this foot class, or vetoed for
+    # this specific meter/position by the caller.
     valid = _VALID_HASHW_ZIHAFS.get(foot_class, set())
-    if zihaf not in valid:
-        return word  # Invalid zihaf for this foot class
+    if zihaf not in valid or (extra_invalid and zihaf in extra_invalid):
+        return word  # Invalid zihaf for this foot class (or this meter/position)
 
     # Re-resolve from the foot class root to prevent double-application
     target = _TAFEELA_MNEMONIC_MAP.get((foot_class, zihaf))
@@ -281,6 +371,11 @@ def _build_hemistich(meter_key: str, zihaf: str, rng: random.Random) -> str:
             result.append(foot)
             continue
 
+        # Meter-specific Hashw exception for this exact position, if any
+        # (see _METER_HASHW_OVERRIDES) — layered on top of the generic,
+        # foot-class-level _VALID_HASHW_ZIHAFS table.
+        overrides = _METER_HASHW_OVERRIDES.get(meter_key, {}).get(i)
+
         if zihaf == "random":
             foot_info = _MNEMONIC_TO_FOOT.get(foot)
             if foot_info is None:
@@ -289,6 +384,8 @@ def _build_hemistich(meter_key: str, zihaf: str, rng: random.Random) -> str:
 
             foot_class, _ = foot_info
             valid = _VALID_HASHW_ZIHAFS.get(foot_class, set())
+            if overrides:
+                valid = valid - overrides
 
             # Candidate list: "Salim" always included; add mods that have a mnemonic
             candidates: list[str] = ["Salim"]
@@ -297,9 +394,9 @@ def _build_hemistich(meter_key: str, zihaf: str, rng: random.Random) -> str:
                     candidates.append(mod)
 
             chosen = rng.choice(candidates)
-            result.append(_try_apply_zihaf(foot, chosen))
+            result.append(_try_apply_zihaf(foot, chosen, extra_invalid=overrides))
         else:
-            result.append(_try_apply_zihaf(foot, zihaf))
+            result.append(_try_apply_zihaf(foot, zihaf, extra_invalid=overrides))
 
     return " ".join(result)
 
@@ -616,6 +713,9 @@ def list_zihafs(meter_key: str) -> str:
 
         salim   = _TAFEELA_MNEMONIC_MAP.get((foot_class, "Salim"), foot)
         valid   = _VALID_HASHW_ZIHAFS.get(foot_class, set())
+        overrides = _METER_HASHW_OVERRIDES.get(meter_key, {}).get(i)
+        if overrides:
+            valid = valid - overrides
 
         mod_parts: list[str] = []
         for mod in sorted(valid):
