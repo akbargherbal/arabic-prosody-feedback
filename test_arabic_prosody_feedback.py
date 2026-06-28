@@ -1080,6 +1080,144 @@ class TestAnalyzePoemIntegration:
         assert poem.meter  # any detected/forced meter string is returned
 
 
+# ===========================================================================
+# Regression tests for bugs documented in the Bug Report
+# ===========================================================================
+
+
+class TestEnrichHemistichEmptyFeetVacuousTruth:
+    """
+    Regression for Bug 1b.
+
+    Python's ``all()`` returns ``True`` for an empty iterable (vacuous truth).
+    Before the fix, ``_enrich_hemistich`` with an empty foot list would set
+    ``is_sound=True``, silently hiding the fact that pyarud parsed nothing.
+    After the fix, an empty foot list must produce ``is_sound=False``.
+    """
+
+    def test_empty_feet_is_not_sound(self):
+        h = _enrich_hemistich("text", "", [], is_ajuz=False)
+        assert h.is_sound is False, (
+            "Empty foot list must not be treated as metrically sound "
+            "(was a vacuous-truth bug: all(... for f in []) == True)"
+        )
+
+    def test_empty_feet_score_is_zero(self):
+        h = _enrich_hemistich("text", "", [], is_ajuz=False)
+        assert h.score == pytest.approx(0.0)
+
+    def test_empty_feet_broken_indices_empty(self):
+        h = _enrich_hemistich("text", "", [], is_ajuz=False)
+        assert h.broken_foot_indices == []
+
+    def test_non_empty_all_ok_feet_still_sound(self):
+        """Ensure the guard doesn't break the happy path."""
+        raw = [
+            {"foot_index": 0, "expected_pattern": "1010110",
+             "actual_segment": "1010110", "status": "ok", "score": 1.0},
+        ]
+        h = _enrich_hemistich("text", "1010110", raw, is_ajuz=False)
+        assert h.is_sound is True
+
+
+@needs_pyarud
+class TestAnalyzePoemMeterNameResolution:
+    """
+    Regression for Bug 1a.
+
+    Passing a raw Arabic meter name (e.g. ``'الطويل'``) directly to
+    ``analyze_poem`` used to reach pyarud unchanged, causing it to return a
+    per-verse ``{"error": "Meter data not found"}`` dict.  The wrapper silently
+    swallowed that, producing ``feet=[], is_sound=True, score=0.0`` — a
+    misleading false-positive.
+
+    After the fix:
+    * Arabic names / alias variants are auto-resolved to the pyarud key before
+      the call.
+    * Per-verse error dicts from pyarud raise ``ValueError`` immediately.
+    * Truly unknown names raise ``ValueError`` via ``to_pyarud_meter_key``.
+    """
+
+    # The literal foot-name strings used in the original notebook experiments.
+    SALIM_SADR = "فَعُولُنْ مَفَاعِيلُنْ فَعُولُنْ مَفَاعِيلُنْ"
+    QABDH_SADR = "فَعُولُنْ مَفَاعِيلُنْ فَعُولُنْ مَفَاعِلُنْ"
+    QABDH_AJUZ = "فَعُولُنْ مَفَاعِيلُنْ فَعُولُنْ مَفَاعِلُنْ"
+
+    @pytest.mark.parametrize("arabic_variant", ["الطويل", "طويل"])
+    def test_arabic_name_auto_resolves_and_returns_real_results(self, arabic_variant):
+        """
+        Arabic meter names must be silently resolved, not silently swallowed.
+        Result must show actual feet (not empty) and a real score (not 0.0).
+        """
+        poem = analyze_poem(
+            [(self.SALIM_SADR, self.SALIM_SADR)],
+            meter_name=arabic_variant,
+        )
+        assert poem.meter == "taweel", (
+            f"Expected auto-resolved meter 'taweel', got {poem.meter!r}"
+        )
+        v = poem.verses[0]
+        assert len(v.sadr.feet) > 0, "feet must not be empty after auto-resolution"
+        assert v.combined_score > 0.0, "score must not be 0.0 after auto-resolution"
+
+    def test_arabic_name_does_not_produce_false_positive_sound(self):
+        """
+        The original bug: Arabic name → empty feet → vacuous is_sound=True.
+        After both fixes combined, is_metrically_sound must reflect reality.
+        """
+        poem = analyze_poem(
+            [(self.SALIM_SADR, self.SALIM_SADR)],
+            meter_name="الطويل",
+        )
+        # Salim form at Arud position is metrically forbidden (Al-Qabdh rule),
+        # so this verse is NOT sound.
+        assert poem.is_metrically_sound is False
+
+    def test_truly_unknown_meter_name_raises_value_error(self):
+        with pytest.raises(ValueError, match="Unknown meter"):
+            analyze_poem(
+                [(self.SALIM_SADR, self.SALIM_SADR)],
+                meter_name="not-a-real-meter",
+            )
+
+    def test_analyze_verse_arabic_name_auto_resolves(self):
+        """analyze_verse is a thin wrapper; same resolution must apply."""
+        vr = analyze_verse(self.SALIM_SADR, self.SALIM_SADR, meter_name="الطويل")
+        assert vr.meter == "taweel"
+        assert len(vr.sadr.feet) > 0
+
+    def test_salim_form_at_arud_correctly_flagged_as_broken(self):
+        """
+        Regression for Bug 2 / Issue 2 (correct engine behaviour, not a code
+        bug).  The Salim form ``مَفَاعِيلُنْ`` at the ʿArūḍ position is
+        classically forbidden in Al-Taweel; it must be replaced by the Qabdh
+        form ``مَفَاعِلُنْ``.  The engine should flag Foot 4 as broken and
+        report a score < 1.0.
+        """
+        poem = analyze_poem(
+            [(self.SALIM_SADR, self.SALIM_SADR)],
+            meter_name="taweel",
+        )
+        v = poem.verses[0]
+        assert v.combined_score < 1.0, "Salim Arud must score < 1.0"
+        assert v.sadr.broken_foot_indices, "Foot 4 (Arud) must be flagged broken"
+
+    def test_qabdh_form_at_arud_scores_perfectly(self):
+        """
+        Using the classical Qabdh-modified ending (مَفَاعِلُنْ) at the ʿArūḍ
+        position should satisfy Al-Taweel and yield a perfect score.
+        """
+        poem = analyze_poem(
+            [(self.QABDH_SADR, self.QABDH_AJUZ)],
+            meter_name="taweel",
+        )
+        v = poem.verses[0]
+        assert v.combined_score == pytest.approx(1.0), (
+            "Qabdh form at Arud should score 1.0"
+        )
+        assert not v.sadr.broken_foot_indices, "No broken feet expected"
+
+
 @pytest.mark.skipif(
     PYARUD_AVAILABLE,
     reason="pyarud is installed; cannot exercise the missing-dependency path",

@@ -573,12 +573,17 @@ def _enrich_hemistich(
         f.score for f in enriched if f.status not in ("missing", "extra_bits")
     ) / max(1, sum(1 for f in enriched if f.status not in ("missing", "extra_bits")))
 
+    # Bug 1b fix: Python's all() vacuously returns True for an empty iterable.
+    # An empty foot list means pyarud parsed nothing (e.g. unrecognised meter
+    # key silently fell through), so we must treat it as *not* sound.
+    is_sound = bool(enriched) and all(f.status == "ok" for f in enriched)
+
     return HemistichResult(
         text=text,
         pattern=binary_to_ux(pattern),  # converted to U/_ notation
         feet=enriched,
         score=avg_score,
-        is_sound=all(f.status == "ok" for f in enriched),
+        is_sound=is_sound,
         broken_foot_indices=broken,
         missing_foot_count=missing,
         extra_bits=extra_bits_entry,
@@ -691,13 +696,37 @@ def analyze_poem(
         raise ValueError("verses must not be empty")
     _require_pyarud()
 
+    # --- Bug 1a fix (part 1): auto-resolve any meter name variant before
+    # passing to pyarud.  Without this, raw Arabic strings like 'الطويل' reach
+    # ArudhProcessor unchanged, causing it to return per-verse error dicts
+    # that silently cascade into vacuous-truth false-positives (is_sound=True,
+    # feet=[], score=0.0).  to_pyarud_meter_key() raises ValueError for truly
+    # unknown names, so callers get a clear error instead of a silent bad result.
+    if meter_name is not None and meter_name not in METER_ARABIC_NAMES:
+        meter_name = to_pyarud_meter_key(meter_name)
+
     proc = _get_processor()
     raw = proc.process_poem(verses, meter_name=meter_name)
+
+    # --- Bug 1a fix (part 2): guard against a top-level error response. ---
+    if "error" in raw:
+        raise ValueError(
+            f"pyarud returned an error for meter {meter_name!r}: {raw['error']}. "
+            f"Pass a valid pyarud key (e.g. 'taweel', 'baseet') or use "
+            f"to_pyarud_meter_key() to translate any name variant first."
+        )
 
     detected_meter: str = raw["meter"]
     verse_results: list[VerseResult] = []
 
     for i, verse_raw in enumerate(raw["verses"]):
+        # --- Bug 1a fix (part 3): guard against per-verse error dicts. ---
+        if "error" in verse_raw:
+            raise ValueError(
+                f"pyarud could not analyse verse {i + 1}: {verse_raw['error']}. "
+                f"Ensure meter_name is a valid pyarud key (e.g. 'taweel') or "
+                f"pass None for auto-detection."
+            )
         sadr_text = verse_raw.get("sadr_text", verses[i][0])
         ajuz_text = verse_raw.get("ajuz_text", verses[i][1])
         full_pat = verse_raw.get("input_pattern", "")
