@@ -50,7 +50,6 @@ from arabic_prosody_feedback import (
     identify_zihaf,
     resolve_meter_key,
     similarity,
-    to_pyarud_meter_key,
     ux_to_binary,
 )
 
@@ -195,27 +194,30 @@ class TestResolveMeterKey:
     @pytest.mark.parametrize(
         "variant", ["khafif", "al-khafif", "khafīf", "خفيف", "الخفيف"]
     )
-    def test_khafif_aliases_resolve(self, variant):
-        assert resolve_meter_key(variant) == "khafif"
+    def test_khafif_aliases_resolve_to_pyarud_spelling(self, variant):
+        assert resolve_meter_key(variant) == "khafeef"
 
     def test_strips_whitespace_and_lowercases(self):
-        assert resolve_meter_key("  KHAFIF  ") == "khafif"
+        assert resolve_meter_key("  KHAFIF  ") == "khafeef"
 
     def test_unknown_meter_raises_value_error(self):
         with pytest.raises(ValueError, match="Unknown meter"):
             resolve_meter_key("not-a-real-meter")
 
-    def test_private_resolve_key_matches_public_wrapper(self):
-        assert _resolve_key("basit") == resolve_meter_key("basit")
+    def test_composes_private_resolve_key_and_translation_table(self):
+        # resolve_meter_key = _resolve_key (alias -> canonical) followed by
+        # the canonical -> pyarud translation table. Confirm both steps
+        # still compose into a single public function correctly.
+        canonical = _resolve_key("basit")
+        assert canonical == "basit"
+        assert resolve_meter_key("basit") == "baseet"
 
-
-class TestToPyarudMeterKey:
     def test_none_passes_through(self):
-        assert to_pyarud_meter_key(None) is None
+        assert resolve_meter_key(None) is None
 
     @pytest.mark.parametrize("native_key", ["baseet", "khafeef", "ramal", "rajaz"])
     def test_pyarud_native_keys_pass_through_unchanged(self, native_key):
-        assert to_pyarud_meter_key(native_key) == native_key
+        assert resolve_meter_key(native_key) == native_key
 
     @pytest.mark.parametrize(
         "variant,expected",
@@ -230,11 +232,7 @@ class TestToPyarudMeterKey:
         ],
     )
     def test_alias_variants_translate_to_pyarud_keys(self, variant, expected):
-        assert to_pyarud_meter_key(variant) == expected
-
-    def test_unknown_meter_raises_value_error(self):
-        with pytest.raises(ValueError):
-            to_pyarud_meter_key("totally-unknown-meter")
+        assert resolve_meter_key(variant) == expected
 
 
 # ===========================================================================
@@ -1073,8 +1071,8 @@ class TestAnalyzePoemIntegration:
         assert result["verses"][0]["combined_score"] < 1.0
 
     @pytest.mark.parametrize("variant", ["khafif", "الخفيف", "khafeef"])
-    def test_to_pyarud_meter_key_accepted_by_analyze_poem(self, variant):
-        key = to_pyarud_meter_key(variant)
+    def test_resolve_meter_key_accepted_by_analyze_poem(self, variant):
+        key = resolve_meter_key(variant)
         # Should not raise: confirms the resolved key is valid for pyarud.
         poem = analyze_poem([(SADR, AJUZ)], meter_name=key)
         assert poem.meter  # any detected/forced meter string is returned
@@ -1135,7 +1133,7 @@ class TestAnalyzePoemMeterNameResolution:
     * Arabic names / alias variants are auto-resolved to the pyarud key before
       the call.
     * Per-verse error dicts from pyarud raise ``ValueError`` immediately.
-    * Truly unknown names raise ``ValueError`` via ``to_pyarud_meter_key``.
+    * Truly unknown names raise ``ValueError`` via ``resolve_meter_key``.
     """
 
     # The literal foot-name strings used in the original notebook experiments.

@@ -11,7 +11,7 @@ Source Acknowledgment:
 - Dynamic pair generation relies on `_MNEMONIC_TO_FOOT` and `_VALID_HASHW_ZIHAFS`
   defined in Phase 1 of `generate_fake_poem.py`.
 - Structural templates are sourced from `METER_TEMPLATES` and filtered using
-  `_ALIASES` and `to_pyarud_meter_key` inside `arabic_prosody_feedback.py`.
+  `_ALIASES` and `resolve_meter_key` inside `arabic_prosody_feedback.py`.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from arabic_prosody_feedback import (
     _ALIASES,
     _PYARUD_AVAILABLE,
     _TAFEELA_MNEMONIC_MAP,
-    to_pyarud_meter_key,
+    resolve_meter_key,
 )
 
 
@@ -42,7 +42,7 @@ def get_supported_pyarud_keys() -> set[str]:
     unique_alias_targets = set(_ALIASES.values())
 
     for target in unique_alias_targets:
-        resolved = to_pyarud_meter_key(target)
+        resolved = resolve_meter_key(target)
         if resolved:
             supported_keys.add(resolved)
 

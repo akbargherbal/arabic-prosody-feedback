@@ -74,7 +74,7 @@ from arabic_prosody_feedback import (
     _TAFEELA_MNEMONIC_MAP,
     _ZIHAF_MAP,
     analyze_poem,
-    to_pyarud_meter_key,
+    resolve_meter_key,
 )
 
 
@@ -486,7 +486,7 @@ def generate_poem(
     فَعُولُ مَفَاعِلُنْ فَعُولُ مَفَاعِلُ
     """
     # Resolve any meter name variant → pyarud key (raises ValueError if unknown)
-    meter_key = to_pyarud_meter_key(meter)
+    meter_key = resolve_meter_key(meter)
     if meter_key is None or meter_key not in METER_TEMPLATES:
         raise ValueError(
             f"Meter {meter!r} (resolved: {meter_key!r}) has no hemistich template.\n"
@@ -843,7 +843,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not args.meter:
             parser.error("--list-zihafs requires --meter METER")
         try:
-            meter_key = to_pyarud_meter_key(args.meter)
+            meter_key = resolve_meter_key(args.meter)
         except ValueError as exc:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
@@ -862,7 +862,7 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # Resolve meter name → pyarud key
     try:
-        meter_key = to_pyarud_meter_key(args.meter)
+        meter_key = resolve_meter_key(args.meter)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1

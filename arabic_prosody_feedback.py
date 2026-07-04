@@ -700,10 +700,10 @@ def analyze_poem(
     # passing to pyarud.  Without this, raw Arabic strings like 'الطويل' reach
     # ArudhProcessor unchanged, causing it to return per-verse error dicts
     # that silently cascade into vacuous-truth false-positives (is_sound=True,
-    # feet=[], score=0.0).  to_pyarud_meter_key() raises ValueError for truly
+    # feet=[], score=0.0).  resolve_meter_key() raises ValueError for truly
     # unknown names, so callers get a clear error instead of a silent bad result.
     if meter_name is not None and meter_name not in METER_ARABIC_NAMES:
-        meter_name = to_pyarud_meter_key(meter_name)
+        meter_name = resolve_meter_key(meter_name)
 
     proc = _get_processor()
     raw = proc.process_poem(verses, meter_name=meter_name)
@@ -713,7 +713,7 @@ def analyze_poem(
         raise ValueError(
             f"pyarud returned an error for meter {meter_name!r}: {raw['error']}. "
             f"Pass a valid pyarud key (e.g. 'taweel', 'baseet') or use "
-            f"to_pyarud_meter_key() to translate any name variant first."
+            f"resolve_meter_key() to translate any name variant first."
         )
 
     detected_meter: str = raw["meter"]
@@ -812,35 +812,34 @@ def _resolve_key(meter: str) -> str:
     return key
 
 
-def resolve_meter_key(meter: str) -> str:
-    """
-    Public wrapper for :func:`_resolve_key`.  Resolves any meter name variant
-    (English, Arabic, transliterated) to a canonical alias-table key.
-    Raises ``ValueError`` if unrecognised.
-    """
-    return _resolve_key(meter)
-
-
-def to_pyarud_meter_key(meter: str | None) -> str | None:
+def resolve_meter_key(meter: str | None) -> str | None:
     """
     Resolve any supported meter name variant (English, Arabic,
-    transliterated, or either internal naming scheme) to the meter key
-    expected by **pyarud**'s :class:`ArudhProcessor`.
+    transliterated, or pyarud's own spelling) to the meter key **pyarud**
+    itself expects (e.g. ``"baseet"``, ``"khafeef"``) — the only spelling
+    that matters, since that's what every downstream caller actually needs.
 
-    This first normalises *meter* via :func:`resolve_meter_key` (which
-    yields a key such as ``"khafif"`` or ``"basit"``), then translates that
-    to pyarud's own naming convention (e.g. ``"khafeef"``, ``"baseet"``)
-    using :data:`_METER_TABLE_TO_PYARUD`.
+    Internally this first normalises *meter* to the alias-table's own
+    canonical key (e.g. ``"basit"``, ``"khafif"``) via :func:`_resolve_key`,
+    then translates that to pyarud's naming convention using
+    :data:`_METER_TABLE_TO_PYARUD`. That intermediate key is never exposed;
+    there is exactly one public resolution path now, and it always returns
+    a pyarud-ready string.
+
+    Raises ``ValueError`` if *meter* is a non-``None`` string that isn't
+    recognised in any known spelling.
 
     Examples
     --------
-    >>> to_pyarud_meter_key("khafif")
-    'khafeef'
-    >>> to_pyarud_meter_key("الخفيف")
-    'khafeef'
-    >>> to_pyarud_meter_key("baseet")
+    >>> resolve_meter_key("basit")
     'baseet'
-    >>> to_pyarud_meter_key(None) is None
+    >>> resolve_meter_key("al-basit")
+    'baseet'
+    >>> resolve_meter_key("البسيط")
+    'baseet'
+    >>> resolve_meter_key("baseet")
+    'baseet'
+    >>> resolve_meter_key(None) is None
     True
     """
     if meter is None:
@@ -1357,7 +1356,7 @@ def analyze_and_report(
         - ``result_dict`` mirrors the output of ``analyze_poem_to_dict``.
         - ``correction_report`` is the full LLM-ready feedback string.
     """
-    pyarud_key = to_pyarud_meter_key(meter_name)
+    pyarud_key = resolve_meter_key(meter_name)
     poem = analyze_poem(verses, meter_name=pyarud_key)
 
     if print_summary:
