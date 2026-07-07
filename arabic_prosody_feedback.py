@@ -19,6 +19,17 @@ This module is **fully standalone**: it embeds the subset of
 `arabic_prosody_helpers` (data model, lookup tables, and analysis helpers)
 that it depends on, so it can run without that file being present.  It still
 requires **pyarud** (``pip install pyarud``) for the actual prosodic analysis.
+
+**Upstream Bug / Known Limitation:**
+Due to an upstream bug in `pyarud`'s text converter (`arudi.py`), words ending
+with a tanwīn fatḥ on an alif maqṣūra (e.g., 'أَسًى', 'هُدًى', 'فَتًى') are scanned
+incorrectly. The converter turns the tanwīn into a 'ن' but fails to skip the
+trailing 'ى', appending an extra silent/sākin unit (e.g., rewriting 'أَسًى' as
+'أسنى' instead of the correct 'أسن'). This results in an inflated mora count
+and false "broken" diagnostics.
+
+*Workaround:* Phonetically normalize such input words before analysis (e.g.,
+rewrite 'أَسًى' to 'أَسَنْ' or 'هُدًى' to 'هُدَنْ') to neutralize this behavior.
 """
 
 from __future__ import annotations
@@ -26,7 +37,6 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from difflib import SequenceMatcher
 from typing import Literal, Optional
-
 
 # ===========================================================================
 # Embedded subset of arabic_prosody_helpers.py
@@ -446,7 +456,9 @@ def identify_zihaf(canonical: str, actual: str) -> str:
     return f"Unknown (Taskeen, {diffs} bit{'s' if diffs > 1 else ''} changed)"
 
 
-def foot_health(status: FootStatus, score: float, zihaf_name: str | None) -> HealthLevel:
+def foot_health(
+    status: FootStatus, score: float, zihaf_name: str | None
+) -> HealthLevel:
     """
     Collapse foot status into a four-level health label.
 
@@ -889,6 +901,7 @@ def get_tafeela_mnemonic(canonical_foot_class: str, zihaf_name: str | None) -> s
 # Internal helpers
 # ---------------------------------------------------------------------------
 
+
 def _pattern_to_class(ux: str) -> Optional[str]:
     """Reverse-map a U/_ canonical pattern to its pyarud foot class name."""
     binary = ux_to_binary(ux)
@@ -911,8 +924,12 @@ def _mora_diff(expected: str, actual: str) -> dict:
         suggestion  : str   — concise plain-English fix
     """
     if expected == actual:
-        return {"len_diff": 0, "direction": "match", "first_div": -1,
-                "suggestion": "Pattern matches exactly."}
+        return {
+            "len_diff": 0,
+            "direction": "match",
+            "first_div": -1,
+            "suggestion": "Pattern matches exactly.",
+        }
 
     len_diff = len(expected) - len(actual)
     min_len = min(len(expected), len(actual))
@@ -923,14 +940,18 @@ def _mora_diff(expected: str, actual: str) -> dict:
             break
 
     if len_diff > 0:
-        missing = expected[len(actual):]
+        missing = expected[len(actual) :]
         units = [("long (_)" if c == "_" else "short (U)") for c in missing]
         sug = (
             f"Foot is {len_diff} mora(s) too short. "
             f"Extend with: {' + '.join(units)}  →  target «{expected}»."
         )
-        return {"len_diff": len_diff, "direction": "too_short",
-                "first_div": first_div, "suggestion": sug}
+        return {
+            "len_diff": len_diff,
+            "direction": "too_short",
+            "first_div": first_div,
+            "suggestion": sug,
+        }
 
     if len_diff < 0:
         extra = abs(len_diff)
@@ -938,20 +959,31 @@ def _mora_diff(expected: str, actual: str) -> dict:
             f"Foot is {extra} mora(s) too long ({len(actual)} units given, "
             f"{len(expected)} needed). Trim to produce «{expected}»."
         )
-        return {"len_diff": len_diff, "direction": "too_long",
-                "first_div": first_div, "suggestion": sug}
+        return {
+            "len_diff": len_diff,
+            "direction": "too_long",
+            "first_div": first_div,
+            "suggestion": sug,
+        }
 
     # Same length, wrong weights
-    wrongs = [(i, expected[i], actual[i])
-              for i in range(len(expected)) if expected[i] != actual[i]]
+    wrongs = [
+        (i, expected[i], actual[i])
+        for i in range(len(expected))
+        if expected[i] != actual[i]
+    ]
     fixes = []
     for pos, e, a in wrongs:
         e_lbl = "long (_)" if e == "_" else "short (U)"
         a_lbl = "long (_)" if a == "_" else "short (U)"
         fixes.append(f"pos {pos + 1}: {a_lbl} → {e_lbl}")
     sug = "Wrong syllable weight(s): " + "; ".join(fixes) + "."
-    return {"len_diff": 0, "direction": "wrong_weight",
-            "first_div": first_div, "suggestion": sug}
+    return {
+        "len_diff": 0,
+        "direction": "wrong_weight",
+        "first_div": first_div,
+        "suggestion": sug,
+    }
 
 
 def _render_diff(expected: str, actual: str, indent: str = "    ") -> str:
@@ -973,11 +1005,11 @@ def _render_diff(expected: str, actual: str, indent: str = "    ") -> str:
         if e == a and e != "·":
             markers.append("|")
         elif e == "·":
-            markers.append("v")   # extra in actual
+            markers.append("v")  # extra in actual
         elif a == "·":
-            markers.append("^")   # missing in actual
+            markers.append("^")  # missing in actual
         else:
-            markers.append("×")   # weight mismatch
+            markers.append("×")  # weight mismatch
 
     return (
         f"{indent}Expected:  {' '.join(exp_p)}\n"
@@ -998,6 +1030,7 @@ def _tafeela_label(f: FootResult) -> str:
 # ---------------------------------------------------------------------------
 # Core: per-verse correction report
 # ---------------------------------------------------------------------------
+
 
 def generate_verse_correction(
     verse: VerseResult,
@@ -1086,8 +1119,15 @@ def generate_verse_correction(
                 tafeela = "EXTRA"
                 all_broken.append((label, f))
 
-            cols.append({"w": w, "exp": f.expected_pattern, "act": f.actual_segment,
-                          "st": st, "tf": tafeela})
+            cols.append(
+                {
+                    "w": w,
+                    "exp": f.expected_pattern,
+                    "act": f.actual_segment,
+                    "st": st,
+                    "tf": tafeela,
+                }
+            )
 
         def _row(key: str) -> str:
             parts = [f"[{c[key].center(c['w'])}]" for c in cols]
@@ -1123,11 +1163,15 @@ def generate_verse_correction(
 
         for hem_label, f in all_broken:
             out.append("")
-            out.append(f"  ▸ [{hem_label}  |  Foot {f.foot_index + 1}  |  {f.position_label}]")
+            out.append(
+                f"  ▸ [{hem_label}  |  Foot {f.foot_index + 1}  |  {f.position_label}]"
+            )
 
             if f.status == "missing":
                 out.append(f"    ✗ Foot is MISSING — hemistich is too short.")
-                out.append(f"    Expected : {f.expected_pattern}  ({len(f.expected_pattern)} morae)")
+                out.append(
+                    f"    Expected : {f.expected_pattern}  ({len(f.expected_pattern)} morae)"
+                )
                 prescriptions.append(
                     f"[{hem_label}, Foot {f.foot_index + 1}]  Add text supplying "
                     f"the missing foot «{f.expected_pattern}» ({len(f.expected_pattern)} morae)."
@@ -1136,7 +1180,9 @@ def generate_verse_correction(
 
             if f.status == "extra_bits":
                 out.append(f"    ✗ Extra material after all expected feet consumed.")
-                out.append(f"    Extra bits: {f.actual_segment}  ({len(f.actual_segment)} morae)")
+                out.append(
+                    f"    Extra bits: {f.actual_segment}  ({len(f.actual_segment)} morae)"
+                )
                 prescriptions.append(
                     f"[{hem_label}]  Remove word(s) producing the trailing "
                     f"«{f.actual_segment}» ({len(f.actual_segment)} extra morae)."
@@ -1145,10 +1191,16 @@ def generate_verse_correction(
 
             # Broken foot — character-level diff + prescription
             info = _mora_diff(f.expected_pattern, f.actual_segment)
-            out.append(f"    Expected : {f.expected_pattern}  ({len(f.expected_pattern)} morae)")
-            out.append(f"    Actual   : {f.actual_segment}  ({len(f.actual_segment)} morae)")
+            out.append(
+                f"    Expected : {f.expected_pattern}  ({len(f.expected_pattern)} morae)"
+            )
+            out.append(
+                f"    Actual   : {f.actual_segment}  ({len(f.actual_segment)} morae)"
+            )
             out.append("")
-            out.append(_render_diff(f.expected_pattern, f.actual_segment, indent="    "))
+            out.append(
+                _render_diff(f.expected_pattern, f.actual_segment, indent="    ")
+            )
             out.append("")
             out.append(f"    → {info['suggestion']}")
 
@@ -1206,6 +1258,7 @@ def generate_verse_correction(
 # ---------------------------------------------------------------------------
 # Poem-level report
 # ---------------------------------------------------------------------------
+
 
 def generate_poem_correction_report(
     poem: PoemResult,
@@ -1304,9 +1357,11 @@ def generate_poem_correction_report(
                 else:
                     info = _mora_diff(f.expected_pattern, f.actual_segment)
                     d = info["len_diff"]
-                    verb = (f"ADD {d} mora(s) to" if d > 0
-                            else f"TRIM {abs(d)} mora(s) from" if d < 0
-                            else "REWEIGHT")
+                    verb = (
+                        f"ADD {d} mora(s) to"
+                        if d > 0
+                        else f"TRIM {abs(d)} mora(s) from" if d < 0 else "REWEIGHT"
+                    )
                     out.append(
                         f"  {item}. Verse {v.verse_index + 1} [{label}, Foot {f.foot_index + 1} "
                         f"({f.position_label})]  {verb}  «{f.actual_segment}»"
@@ -1320,6 +1375,7 @@ def generate_poem_correction_report(
 # ---------------------------------------------------------------------------
 # Convenience entry point
 # ---------------------------------------------------------------------------
+
 
 def analyze_and_report(
     verses: list[tuple[str, str]],
